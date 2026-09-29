@@ -6,6 +6,7 @@
 #include <cstring>
 #include <string>
 
+#include "apps/AppRegistry.h"
 #include "scenes/AppScenes.h"
 #include "scenes/HomeScene.h"
 
@@ -36,13 +37,9 @@ bool validName(const char* n) {
 
 // Accept only ids the home screen knows. Unknown ids drop silently so a
 // newer phone never wedges an older firmware.
-bool builtinId(const char* s) {
-  static constexpr const char* kIds[] = {"read",  "priorities", "today",
-                                         "block", "workout",    "notifications"};
-  for (const char* id : kIds)
-    if (!strcmp(s, id)) return true;
-  return false;
-}
+// A built-in app this build enables (apps/AppRegistry.h). Ids of apps the
+// build leaves out are refused like any unknown name.
+bool builtinId(const char* s) { return apps::enabled(s); }
 
 void csvFromArray(JsonArrayConst arr, char* out, size_t n, size_t maxItems) {
   size_t len = 0, count = 0;

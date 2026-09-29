@@ -11,6 +11,7 @@
 #include "../StatusBar.h"
 #include "../art/LauncherIcons.h"
 #include "../ble/CompanionBleService.h"
+#include "../apps/AppRegistry.h"
 #include "AppScenes.h"
 #include "HomeScene.h"
 
@@ -19,11 +20,11 @@
 
 namespace {
 
-// Six slots in a 3x2 grid. What fills them comes from NVS (Phase 3
-// "homeSlots"): the six builtins by default, or installed apps in any
-// slot. See loadSlots(). Icon bitmaps come from IconStyle (Settings ->
-// Icon style packs); the XPhoneIconPacks columns in LauncherIcons.h share
-// the builtin order Today, Notifications, Priorities, Block, Read, Workout.
+// Up to six slots, two per row. What fills them comes from NVS (Phase 3
+// "homeSlots"): the build's enabled built-in apps by default
+// (XP_LAUNCHER_APPS, apps/AppRegistry.h), or installed apps in any slot.
+// See loadSlots(). Icon bitmaps come from IconStyle (Settings -> Icon style
+// packs); each registry row names its XPhoneIconPacks column.
 
 // 1bpp blitter for the ported artwork (format per LauncherIcons.h header;
 // a cleared bit is ink, only ink pixels are drawn so paper stays white).
@@ -57,7 +58,7 @@ constexpr int kTilePad = 12;      // inner padding between the box edge and icon
 constexpr int kMaxTileSide = 186; // cap so 5 tiles don't fill the panel — smaller
                                   // boxes with comfortable margins (approved size)
 
-int gridRows() { return (LauncherScene::APP_COUNT + LauncherScene::COLS - 1) / LauncherScene::COLS; }
+int gridRows(const int count) { return (count + LauncherScene::COLS - 1) / LauncherScene::COLS; }
 
 // Lazily constructed so BoardConfig::ACTIVE is definitely set (no static-init
 // order dependence). X3 reads the BQ27220 fuel gauge over I2C
@@ -76,12 +77,6 @@ void LauncherScene::onEnter() {
 }
 
 void LauncherScene::loadSlots() {
-  // Builtin id -> launcher icon index + label (LauncherIcons.h app order).
-  struct Builtin { const char* id; const char* label; int8_t icon; };
-  static constexpr Builtin kBuiltins[] = {
-      {"today", "Today", 0},        {"notifications", "Notifications", 1},
-      {"priorities", "Priorities", 2}, {"block", "Block", 3},
-      {"read", "Read", 4},          {"workout", "Workout", 5}};
   char csv[224];
   homeSlotsCsv(csv, sizeof(csv));
   // A saved layout that names an app the card no longer holds is stale, and
@@ -91,15 +86,14 @@ void LauncherScene::loadSlots() {
   // stale list is dropped whole and the documented default order stands.
   // Once a phone can arrange the home screen this wants revisiting, because
   // then a saved list is a person's choice and only the dead entry should go.
+  // (A built-in app this build leaves out is not stale: it is skipped below.)
   {
     char probe[224];
     snprintf(probe, sizeof(probe), "%s", csv);
     char* psave = nullptr;
     bool stale = false;
     for (char* tok = strtok_r(probe, ",", &psave); tok && !stale; tok = strtok_r(nullptr, ",", &psave)) {
-      bool isBuiltin = false;
-      for (const Builtin& b : kBuiltins) isBuiltin = isBuiltin || !strcmp(tok, b.id);
-      if (isBuiltin) continue;
+      if (apps::find(tok)) continue;
       char path[64];
       snprintf(path, sizeof(path), "/apps/%s/app.json", tok);
       if (!((SdMan.ready() || SdMan.begin()) && SdMan.exists(path))) stale = true;
@@ -111,93 +105,62 @@ void LauncherScene::loadSlots() {
     }
   }
   int n = 0;
+  auto placed = [&](const char* id) {
+    for (int i = 0; i < n; ++i)
+      if (!strcmp(_slots[i].id, id)) return true;
+    return false;
+  };
+  auto placeBuiltin = [&](const apps::BuiltinApp& b) {
+    Slot& s = _slots[n++];
+    snprintf(s.id, sizeof(s.id), "%s", b.id);
+    snprintf(s.label, sizeof(s.label), "%s", b.label);
+    s.icon = b.icon;
+  };
   char* save = nullptr;
-  for (char* tok = strtok_r(csv, ",", &save); tok && n < APP_COUNT; tok = strtok_r(nullptr, ",", &save)) {
+  for (char* tok = strtok_r(csv, ",", &save); tok && n < MAX_APPS; tok = strtok_r(nullptr, ",", &save)) {
+    if (placed(tok)) continue;
+    if (const apps::BuiltinApp* b = apps::find(tok)) {
+      if (apps::enabled(tok)) placeBuiltin(*b);  // left out of this build: no tile
+      continue;
+    }
+    // An installed app: label from its app.json "name" (filtered parse,
+    // first 256 bytes), else the dir name with a capital.
     Slot& s = _slots[n];
-    bool builtin = false;
-    for (const Builtin& b : kBuiltins) {
-      if (!strcmp(tok, b.id)) {
-        snprintf(s.id, sizeof(s.id), "%s", b.id);
-        snprintf(s.label, sizeof(s.label), "%s", b.label);
-        s.icon = b.icon;
-        builtin = true;
-        break;
-      }
-    }
-    if (!builtin) {
-      // An app that is no longer installed must not keep its tile. Removing
-      // an app deletes its files but never touched the saved slot list, so
-      // the home screen went on offering a tile that opens nothing — Andrew
-      // still saw Transit after it was removed (2026-09-08). When the app
-      // file is gone the NEXT unplaced builtin takes that position, in the
-      // order they are declared. Skipping the slot instead pushed the
-      // displaced builtin to the end of the grid, which put Notifications
-      // last on Andrew's X3 when it belongs right after Today.
-      {
-        char probe[64];
-        snprintf(probe, sizeof(probe), "/apps/%s/app.json", tok);
-        if (!((SdMan.ready() || SdMan.begin()) && SdMan.exists(probe))) {
-          const Builtin* fill = nullptr;
-          for (const Builtin& b : kBuiltins) {
-            bool used = false;
-            for (int i = 0; i < n && !used; ++i) used = !strcmp(_slots[i].id, b.id);
-            if (used) continue;
-            // Not already placed here, and not named later in the saved list
-            // either — otherwise this would steal a slot the person chose.
-            if (strstr(save ? save : "", b.id)) continue;
-            fill = &b;
-            break;
-          }
-          if (!fill) continue;
-          snprintf(s.id, sizeof(s.id), "%s", fill->id);
-          snprintf(s.label, sizeof(s.label), "%s", fill->label);
-          s.icon = fill->icon;
-          ++n;
-          continue;
-        }
-      }
-      // An installed app: label from its app.json "name" (filtered parse,
-      // first 256 bytes), else the dir name with a capital.
-      snprintf(s.id, sizeof(s.id), "%s", tok);
-      snprintf(s.label, sizeof(s.label), "%s", tok);
-      if (s.label[0] >= 'a' && s.label[0] <= 'z') s.label[0] = static_cast<char>(s.label[0] - 32);
-      s.icon = -1;
-      char path[64];
-      snprintf(path, sizeof(path), "/apps/%s/app.json", tok);
-      if (SdMan.ready() || SdMan.begin()) {
-        FsFile f = SdMan.open(path, O_RDONLY);
-        if (f) {
-          char buf[256];
-          const int got = f.read(buf, sizeof(buf) - 1);
-          f.close();
-          if (got > 0) {
-            buf[got] = 0;
-            JsonDocument filter;
-            filter["name"] = true;
-            JsonDocument doc;
-            if (!deserializeJson(doc, buf, static_cast<size_t>(got),
-                                 DeserializationOption::Filter(filter)) &&
-                doc["name"].as<const char*>())
-              snprintf(s.label, sizeof(s.label), "%s", doc["name"].as<const char*>());
-          }
+    snprintf(s.id, sizeof(s.id), "%s", tok);
+    snprintf(s.label, sizeof(s.label), "%s", tok);
+    if (s.label[0] >= 'a' && s.label[0] <= 'z') s.label[0] = static_cast<char>(s.label[0] - 32);
+    s.icon = -1;
+    char path[64];
+    snprintf(path, sizeof(path), "/apps/%s/app.json", tok);
+    if (SdMan.ready() || SdMan.begin()) {
+      FsFile f = SdMan.open(path, O_RDONLY);
+      if (f) {
+        char buf[256];
+        const int got = f.read(buf, sizeof(buf) - 1);
+        f.close();
+        if (got > 0) {
+          buf[got] = 0;
+          JsonDocument filter;
+          filter["name"] = true;
+          JsonDocument doc;
+          if (!deserializeJson(doc, buf, static_cast<size_t>(got),
+                               DeserializationOption::Filter(filter)) &&
+              doc["name"].as<const char*>())
+            snprintf(s.label, sizeof(s.label), "%s", doc["name"].as<const char*>());
         }
       }
     }
     ++n;
   }
-  // Fill any short list with the builtins that are not yet placed.
-  for (const Builtin& b : kBuiltins) {
-    if (n >= APP_COUNT) break;
-    bool placed = false;
-    for (int i = 0; i < n; ++i) placed = placed || !strcmp(_slots[i].id, b.id);
-    if (placed) continue;
-    snprintf(_slots[n].id, sizeof(_slots[n].id), "%s", b.id);
-    snprintf(_slots[n].label, sizeof(_slots[n].label), "%s", b.label);
-    _slots[n].icon = b.icon;
-    ++n;
+  // Every enabled built-in app gets a tile: the ones the saved list did not
+  // place go at the end, in build order.
+  for (int i = 0; i < apps::enabledCount() && n < MAX_APPS; ++i) {
+    const apps::BuiltinApp* b = apps::enabledAt(i);
+    if (!placed(b->id)) placeBuiltin(*b);
   }
+  _count = n;
   _slotsLoaded = true;
-  if (_sel >= APP_COUNT) _sel = 0;
+  if (_sel >= _count) _sel = 0;
 }
 
 void LauncherScene::moveSelection(const int dCol, const int dRow) {
@@ -205,16 +168,17 @@ void LauncherScene::moveSelection(const int dCol, const int dRow) {
   // Front Left/Right = linear PREV/NEXT with wrap (Workout↔Today).
   // Up/Down move by row and still clamp (no wrap) so a short last row feels
   // predictable.
+  if (_count <= 0) return;
   if (dCol != 0) {
-    sel = (sel + dCol) % APP_COUNT;
-    if (sel < 0) sel += APP_COUNT;
+    sel = (sel + dCol) % _count;
+    if (sel < 0) sel += _count;
   }
   if (dRow < 0 && sel >= COLS) sel -= COLS;
   if (dRow > 0) {
-    if (sel + COLS < APP_COUNT) {
+    if (sel + COLS < _count) {
       sel += COLS;
-    } else if (sel / COLS < (APP_COUNT - 1) / COLS) {
-      sel = APP_COUNT - 1;  // clamp into a short last row
+    } else if (sel / COLS < (_count - 1) / COLS) {
+      sel = _count - 1;  // clamp into a short last row
     }
   }
   if (sel != _sel) {
@@ -231,13 +195,18 @@ void LauncherScene::moveSelection(const int dCol, const int dRow) {
   }
 }
 
+void LauncherScene::cellOrigin(const int i, int& x, int& y) const {
+  const int row = i / COLS;
+  const bool loneLast = i == _count - 1 && _count % COLS == 1;
+  x = loneLast ? _gridX + (_side + kGap) / 2 : _gridX + (i % COLS) * (_side + kGap);
+  y = _gridY + row * (_cellH + kGap);
+}
+
 XpRect LauncherScene::cellRect(const int i) const {
   if (_side <= 0) return XpRect{};  // no layout yet -> full-panel fallback
   constexpr int16_t kSlop = 6;      // border rounding + label overhang past the tile edge
-  const int col = i % COLS;
-  const int row = i / COLS;
-  const int x = _gridX + col * (_side + kGap);
-  const int y = _gridY + row * (_cellH + kGap);
+  int x, y;
+  cellOrigin(i, x, y);
   return XpRect{static_cast<int16_t>(x - kSlop), static_cast<int16_t>(y - kSlop),
                 static_cast<int16_t>(_side + 2 * kSlop), static_cast<int16_t>(_cellH + 2 * kSlop)};
 }
@@ -248,7 +217,7 @@ void LauncherScene::handleInput(Input& in) {
   // the Input state machine suppresses the tap-on-release once a long-press
   // fires, so Btn::Down won't also move the selection this press.
   if (in.wasLongPressed(Btn::Down)) {
-    showBlockDeepWork();
+    if (apps::enabled("block")) showBlockDeepWork();  // no Block app in this build: no shortcut
     return;
   }
   if (in.wasPressed(Btn::Left)) moveSelection(-1, 0);
@@ -258,18 +227,8 @@ void LauncherScene::handleInput(Input& in) {
   if (in.wasPressed(Btn::Confirm)) {
     if (!_slotsLoaded) loadSlots();
     const char* id = _slots[_sel].id;
-    if (strcmp(id, "block") == 0) {
-      showBlock();
-    } else if (strcmp(id, "priorities") == 0) {
-      showPriorities();
-    } else if (strcmp(id, "today") == 0) {
-      showToday();
-    } else if (strcmp(id, "notifications") == 0) {
-      showNotifications();
-    } else if (strcmp(id, "read") == 0) {
-      showReader();
-    } else if (strcmp(id, "workout") == 0) {
-      showWorkout();
+    if (const apps::BuiltinApp* b = apps::find(id)) {
+      b->open();
     } else {
       if (!showApp(id)) markDirty();  // a missing app just repaints the grid
     }
@@ -341,7 +300,8 @@ void LauncherScene::render(Gfx& gfx) {
   // budgets allow, capped at kMaxTileSide so five tiles read as comfortable
   // cards rather than filling the panel; the whole block is then centered both
   // ways between the status bar and the soft-key bar.
-  const int rows = gridRows();
+  if (!_slotsLoaded) loadSlots();
+  const int rows = gridRows(_count);
   const int availTop = kStatusH;
   const int availH = h - Scene::SOFTKEY_BAR_H - availTop;
   const int sideFromW = (w - 2 * kMargin - (COLS - 1) * kGap) / COLS;
@@ -369,12 +329,9 @@ void LauncherScene::render(Gfx& gfx) {
   const int iconSize = XPhoneLauncherIconSize;
   const int labelLineH = gfx.lineHeight(kFontBold);
 
-  if (!_slotsLoaded) loadSlots();
-  for (int i = 0; i < APP_COUNT; i++) {
-    const int col = i % COLS;
-    const int row = i / COLS;
-    const int cx = gridX + col * (side + kGap);
-    const int cy = gridY + row * (cellH + kGap);
+  for (int i = 0; i < _count; i++) {
+    int cx, cy;
+    cellOrigin(i, cx, cy);
 
     // Rounded box = the near-full tile (small inset). Thin outline for every
     // app, thick when selected. Icon and label both live inside it.

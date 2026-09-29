@@ -14,7 +14,7 @@ uint8_t get();
 // Persist and activate a pack. Clamped. Main-loop only.
 void set(uint8_t packIndex);
 
-// Bitmap for launcher app slot `appIndex` (0..APP_COUNT-1) from the active pack.
+// Bitmap for launcher app slot `appIndex` (0..5, the XPhoneIconPacks column) from the active pack.
 // Never null when packs are complete.
 const uint8_t* iconForApp(int appIndex);
 

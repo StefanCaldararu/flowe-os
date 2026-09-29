@@ -1,5 +1,7 @@
 #include "HomeScene.h"
 
+#include "../apps/AppRegistry.h"
+
 #include <Arduino.h>
 #include <BatteryMonitor.h>
 #include <Preferences.h>
@@ -34,7 +36,6 @@ constexpr const char* kPrefsLayoutKey = "homeLay";   // 0 = Tiles, 1 = Widget
 constexpr const char* kPrefsTilesKey = "homeTiles";   // csv of builtin ids
 constexpr const char* kPrefsWidgetsKey = "homeWdgts"; // csv of builtin ids
 constexpr const char* kPrefsSlotsKey = "homeSlots";   // csv, launcher slots
-constexpr const char* kDefaultSlots = "today,notifications,priorities,block,read,workout";
 
 
 // Geometry (logical portrait; both panels). Same margins as the V2 mock,
@@ -146,7 +147,7 @@ void putCsv(const char* key, const char* csv) {
 void setHomeTiles(const char* csv) { putCsv(kPrefsTilesKey, csv); }
 void setHomeWidgets(const char* csv) { putCsv(kPrefsWidgetsKey, csv); }
 void setHomeSlots(const char* csv) { putCsv(kPrefsSlotsKey, csv); }
-const char* kDefaultSlotsCsv() { return kDefaultSlots; }
+const char* kDefaultSlotsCsv() { return apps::defaultSlotsCsv(); }
 
 void homeSlotsCsv(char* out, size_t n) {
   out[0] = 0;
@@ -155,7 +156,7 @@ void homeSlotsCsv(char* out, size_t n) {
     prefs.getString(kPrefsSlotsKey, out, n);
     prefs.end();
   }
-  if (!out[0]) snprintf(out, n, "%s", kDefaultSlots);
+  if (!out[0]) snprintf(out, n, "%s", apps::defaultSlotsCsv());
 }
 
 // ---------------------------------------------------------------- lifecycle

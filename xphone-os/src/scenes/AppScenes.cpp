@@ -1,5 +1,7 @@
 #include "AppScenes.h"
 
+#include "../apps/AppRegistry.h"
+
 #include <cstring>
 
 #include "AboutScene.h"
@@ -9,6 +11,7 @@
 #include "HomeScene.h"
 #include "WifiScene.h"
 #include "LauncherScene.h"
+#include "NotesScene.h"
 #include "NotificationsScene.h"
 #include "PrioritiesScene.h"
 #include "ReaderScene.h"
@@ -35,6 +38,7 @@ BlockScene gBlock;
 PrioritiesScene gPriorities;
 TodayScene gToday;
 WorkoutScene gWorkout;
+NotesScene gNotes;
 ReaderScene gReader;
 FileTransferScene gFileTransfer;
 WifiScene gWifi;
@@ -93,6 +97,11 @@ void showWorkout() {
   SCENES.switchTo(gWorkout);
 }
 
+void showNotes() {
+  gCurrentSceneId = SceneId::Notes;
+  SCENES.switchTo(gNotes);
+}
+
 void showFileTransfer() {
   gCurrentSceneId = SceneId::FileTransfer;
   SCENES.switchTo(gFileTransfer);
@@ -147,6 +156,9 @@ void stopFileTransferIfActive() {
 // so a restored scene refreshes itself. Sub-view state (Settings picker,
 // Notifications detail, Block modes/break) resets to the scene default — fine.
 void showSceneById(SceneId id) {
+  // An app this build leaves out (XP_LAUNCHER_APPS) never restores: a wake
+  // from an older build that slept on it lands on the launcher.
+  if (!apps::sceneEnabled(id)) id = SceneId::Launcher;
   switch (id) {
     case SceneId::Notifications: showNotifications(); break;
     case SceneId::Settings:      showSettings();      break;
@@ -157,6 +169,7 @@ void showSceneById(SceneId id) {
     case SceneId::About:         showAbout();         break;
     case SceneId::Reader:        showReader();        break;
     case SceneId::Workout:       showWorkout();       break;
+    case SceneId::Notes:         showNotes();         break;
     case SceneId::Home:          showHome();          break;
     // FileTransfer deliberately NOT restored: waking straight into a scene
     // that would show a stale Idle menu (the radio never survives sleep)
@@ -177,6 +190,7 @@ const char* sceneName(SceneId id) {
     case SceneId::About:         return "About";
     case SceneId::Reader:        return "Reader";
     case SceneId::Workout:       return "Workout";
+    case SceneId::Notes:         return "Notes";
     case SceneId::Home:          return "Home";
     case SceneId::FileTransfer:  return "Transfer";
     case SceneId::Launcher:      return "Launcher";

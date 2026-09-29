@@ -48,6 +48,7 @@
 #include "SdUpdate.h"
 #include "StallWatch.h"
 #include "Sleep.h"
+#include "apps/AppRegistry.h"
 #include "ble/CompanionAncsClient.h"
 #include "ble/CompanionBleService.h"
 #include "reader/FbpBook.h"
@@ -762,7 +763,7 @@ static void pumpCompanionEvents() {
     if (COMPANION_BLE.consumeGotoPush(gp)) {
       if (gCurrentSceneId == SceneId::Reader) {
         readerAcceptGoto(gp.key, gp.cid);
-      } else if (gCurrentSceneId == SceneId::Launcher) {
+      } else if (gCurrentSceneId == SceneId::Launcher && apps::enabled("read")) {
         showReader();
         readerAcceptGoto(gp.key, gp.cid);
       } else {

@@ -36,6 +36,7 @@ enum class SceneId : uint32_t {
   FileTransfer = 9,
   Wifi = 10,
   Home = 11,  // Widget home layout (Phase 2)
+  Notes = 12,  // Obsidian vault viewer
 };
 
 // Single source of truth for "what scene is on glass" — set by every show*()
@@ -65,6 +66,7 @@ void showPriorities();  // M3: real Priorities scene (to-do snapshot via BLE)
 void showToday();       // M3: real Today scene (agenda/reminders/weather card)
 void showReader();      // R1 EPUB reader (resumes the last book; book list on BACK)
 void showWorkout();     // Workout: set-by-set exercise tracker synced from iPhone
+void showNotes();       // Notes: the Obsidian vault mirrored under /notes on SD
 // Declarative app (Phase 1: bench dev console "app <name>"). Loads
 // /apps/<name>/app.json from SD into the generic AppScene and switches to
 // it. Returns false (and stays on the current scene) when loading fails.

@@ -97,8 +97,8 @@ void setHomeLayout(HomeLayout l);
 // builtin ids ("block,today" / "read,priorities"). Stored in NVS.
 void setHomeTiles(const char* csv);
 void setHomeWidgets(const char* csv);
-// The six launcher slots, csv of builtin ids or installed app names.
-// Default: the six builtins in launcher order.
+// The launcher slots (up to six), csv of builtin ids or installed app names.
+// Default: this build's enabled built-in apps (XP_LAUNCHER_APPS) in order.
 void setHomeSlots(const char* csv);
 /// The documented out-of-the-box slot order.
 const char* kDefaultSlotsCsv();

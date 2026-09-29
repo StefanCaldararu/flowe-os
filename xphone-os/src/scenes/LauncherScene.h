@@ -1,29 +1,31 @@
 #pragma once
 
-// xphone-os — launcher: status bar + 3x2 app grid (Notifications/Read/Today/
-// Priorities/Block/Workout). Settings opens from the BACK soft-key; About
-// lives in Settings. Icon bitmaps come from IconStyle (multi-pack).
+// xphone-os — launcher: status bar + a grid of up to six apps, two per row
+// (which built-in apps, and their order, is a build choice: XP_LAUNCHER_APPS,
+// apps/AppRegistry.h). Settings opens from the BACK soft-key; About lives in
+// Settings. Icon bitmaps come from IconStyle (multi-pack).
 
 #include "../Scene.h"
 
 class LauncherScene : public Scene {
  public:
-  void onEnter() override;  // reloads the six slots from NVS
+  void onEnter() override;  // reloads the slots from NVS
   void handleInput(Input& in) override;
   void render(Gfx& gfx) override;
   const char* const* softKeys() const override;  // [gear] / OPEN / PREV / NEXT
   uint8_t softKeyIconMask() const override { return 0x01; }  // Settings = gear tab
 
   static constexpr int COLS = 2;
-  static constexpr int APP_COUNT = 6;
+  static constexpr int MAX_APPS = 6;
+  int appCount() const { return _count; }
 
   // Bench dev console ("where"): expose the grid selection so remote
   // navigation is fact-based, never dead reckoning.
   int selection() const { return _sel; }
 
-  // Phase 3: the six slots come from NVS ("homeSlots" csv: builtin ids or
-  // installed app names). applyHomeConfigLive() calls this after a
-  // home.layout card.
+  // Phase 3: the slots come from NVS ("homeSlots" csv: builtin ids or
+  // installed app names), limited to the built-in apps this build enables.
+  // applyHomeConfigLive() calls this after a home.layout card.
   void loadSlots();
 
  private:
@@ -32,13 +34,17 @@ class LauncherScene : public Scene {
     char label[20];   // what the tile says
     int8_t icon;      // LauncherIcons index, -1 = installed app (monogram)
   };
-  Slot _slots[APP_COUNT];
+  Slot _slots[MAX_APPS];
+  int _count = 0;  // tiles in use, 1..MAX_APPS
   bool _slotsLoaded = false;
 
   void moveSelection(int dCol, int dRow);
   // Logical rect of grid cell i (tile + label, small slop), from the layout
   // cached by render(). Empty rect until the first render.
   XpRect cellRect(int i) const;
+  // Top-left of grid cell i from the cached layout. A lone tile on the last
+  // row sits centered rather than under the left column.
+  void cellOrigin(int i, int& x, int& y) const;
 
   int _sel = 0;  // persists across scene switches (static instance)
 
