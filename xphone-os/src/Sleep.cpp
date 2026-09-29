@@ -7,6 +7,7 @@
 #include <EInkDisplay.h>
 #include <InputManager.h>
 #include <Preferences.h>
+#include <SDCardManager.h>
 #include <Wire.h>
 
 #include <cstdio>
@@ -32,6 +33,7 @@
 #include "scenes/PrioritiesScene.h"
 #include "scenes/WorkoutScene.h"
 #include "WorkoutStore.h"
+#include "art/SleepImage.h"
 #include <ArduinoJson.h>
 
 namespace {
@@ -106,8 +108,71 @@ uint32_t frameFingerprint(Gfx& gfx) {
 }
 uint32_t gLastPosterFingerprint = 0;  // the poster on the glass, 0 = none
 
+// Image face. Stamp one packed 1-bit row (MSB-first, SET bit = ink) of an
+// image w pixels wide, centered on the logical panel and clipped to it, so
+// one picture works on both the X3 (528x792) and the X4 (480x800).
+void blitSleepImageRow(Gfx& gfx, const uint8_t* row, const int w, const int h, const int r) {
+  const int y = (gfx.height() - h) / 2 + r;
+  if (y < 0 || y >= gfx.height()) return;
+  const int x0 = (gfx.width() - w) / 2;
+  for (int b = 0; b < (w + 7) / 8; b++) {
+    if (!row[b]) continue;  // all paper
+    for (int bit = 0; bit < 8; bit++) {
+      if (!(row[b] & (0x80 >> bit))) continue;
+      const int x = x0 + (b << 3) + bit;
+      if (x >= 0 && x < gfx.width()) gfx.drawPixel(x, y, true);
+    }
+  }
+}
+
+// The person's own picture: Sleep::kSleepImagePath on the SD card, streamed
+// one row at a time through a stack buffer (no heap — the nap runs with BLE
+// up and a fragmented heap). CoverThumb's "XT" v1 format: 8-byte header
+// (magic 0x5854 LE, version 1, reserved, width LE, height LE), then the rows.
+// False (and nothing drawn) when the card or file is missing or invalid.
+bool drawSdSleepImage(Gfx& gfx) {
+  constexpr uint16_t kMagic = 0x5854;  // 'XT'
+  constexpr int kMaxDim = 1024;
+  if (!SdMan.ready() && !SdMan.begin()) return false;
+  FsFile f = SdMan.open(Sleep::kSleepImagePath, O_RDONLY);
+  if (!f) return false;
+  uint8_t hdr[8] = {};
+  const bool hdrOk = f.read(hdr, sizeof(hdr)) == static_cast<int>(sizeof(hdr));
+  const int w = hdr[4] | (hdr[5] << 8);
+  const int h = hdr[6] | (hdr[7] << 8);
+  if (!hdrOk || static_cast<uint16_t>(hdr[0] | (hdr[1] << 8)) != kMagic || hdr[2] != 1 || w <= 0 ||
+      w > kMaxDim || h <= 0 || h > kMaxDim) {
+    Serial.printf("[xphone-os] sleep: %s is not a sleep image\n", Sleep::kSleepImagePath);
+    f.close();
+    return false;
+  }
+  const int rowBytes = (w + 7) / 8;
+  uint8_t row[(kMaxDim + 7) / 8];
+  for (int r = 0; r < h; r++) {
+    if (f.read(row, rowBytes) != rowBytes) break;  // truncated: keep what was drawn
+    blitSleepImageRow(gfx, row, w, h, r);
+  }
+  f.close();
+  return true;
+}
+
+// SD picture when there is one, else the one built into the firmware
+// (art/SleepImage.h), so the Image face works straight after flashing.
+void drawSleepImage(Gfx& gfx) {
+  if (drawSdSleepImage(gfx)) return;
+  const int rowBytes = (kSleepImageW + 7) / 8;
+  for (int r = 0; r < kSleepImageH; r++)
+    blitSleepImageRow(gfx, kSleepImageBits + r * rowBytes, kSleepImageW, kSleepImageH, r);
+}
+
 void composeSleepScreen(Gfx& gfx, const bool napping) {
   gfx.clear();
+
+  // Image face: the picture is the whole poster.
+  if (Sleep::face() == Sleep::Face::Image) {
+    drawSleepImage(gfx);
+    return;
+  }
 
   // Sleeping FROM the Workout scene: the workout list replaces the priorities
   // list; the footer stack (calendar + block + wake hint) stays identical so
@@ -253,6 +318,7 @@ void loadPolicy() {
     nap = p.getUShort("napMin", nap);
     off = p.getUShort("offMin", off);
     sFace = p.getUChar("face", 0);
+    if (sFace > static_cast<uint8_t>(Face::Image)) sFace = 0;
     p.end();
   }
   sNapMin = nap;
@@ -299,12 +365,24 @@ uint16_t cycleOffAfter(const int delta) {
 Face face() { loadPolicy(); return static_cast<Face>(sFace); }
 void setFace(const Face f) { loadPolicy(); sFace = static_cast<uint8_t>(f); storePolicy(); }
 Face cycleFace(const int delta) {
-  (void)delta;  // two choices: any step flips
-  setFace(face() == Face::Priorities ? Face::LastScreen : Face::Priorities);
+  // Last screen needs the Widget home, which only the exploration build
+  // offers (kExploreHomeApps); the shipping build steps Priorities <-> Image.
+  constexpr int kFaces = 3;
+  int f = static_cast<int>(face());
+  do {
+    f = ((f + (delta < 0 ? -1 : 1)) % kFaces + kFaces) % kFaces;
+  } while (!kExploreHomeApps && static_cast<Face>(f) == Face::LastScreen);
+  setFace(static_cast<Face>(f));
   Serial.printf("[xphone-os] settings: sleep screen %s\n", faceName(face()));
   return face();
 }
-const char* faceName(const Face f) { return f == Face::LastScreen ? "Last screen" : "Priorities"; }
+const char* faceName(const Face f) {
+  switch (f) {
+    case Face::LastScreen: return "Last screen";
+    case Face::Image: return "Image";
+    default: return "Priorities";
+  }
+}
 void formatMinutes(char* out, const size_t n, const uint16_t min) {
   if (min == 0) snprintf(out, n, "Never");
   else if (min < 60) snprintf(out, n, "%u min", static_cast<unsigned>(min));

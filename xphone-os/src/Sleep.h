@@ -67,8 +67,14 @@ uint16_t offChoiceAt(int i);
 // Settings > Sleep > Sleep screen (Andrew, 2026-09-06: a custom sleep screen,
 // the person chooses). 0 = Priorities (the proven poster; Workout when napped
 // from Workout), 1 = Last screen (the home hero the device slept from, from
-// the home-apps lane; needs the Widget home). NVS "sleep": face.
-enum class Face : uint8_t { Priorities = 0, LastScreen = 1 };
+// the home-apps lane; needs the Widget home), 2 = Image (a full-screen
+// picture: kSleepImagePath from the SD card when present, else the one
+// built into the firmware, art/SleepImage.h). NVS "sleep": face.
+enum class Face : uint8_t { Priorities = 0, LastScreen = 1, Image = 2 };
+// The Image face's picture: a 1-bit "XT" bitmap (the reader's cover-thumb
+// format, reader/CoverThumb.h) made by tools/make_sleep_image.py. Drawn
+// centered; ink bits only, on white.
+constexpr const char* kSleepImagePath = "/sleep.bin";
 Face face();
 void setFace(Face f);
 Face cycleFace(int delta);
