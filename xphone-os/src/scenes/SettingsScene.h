@@ -46,7 +46,7 @@ class SettingsScene : public Scene {
 
   View _view = View::Menu;
   int _menuSel = 0;
-  int _sleepSel = 0;  // 0 = nap after, 1 = off after
+  int _sleepSel = 0;  // 0 = nap after, 1 = off after, 2 = sleep screen
   int _sleepPickSel = 0;  // row in the choice list for the selected Sleep row
   int _pickSel = 0;
   int _fileCount = 0;

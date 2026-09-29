@@ -100,6 +100,10 @@ class FileTransferScene : public Scene {
   char _pillShown[40] = {0};
 
   State _state = State::Idle;
+  // Started from the device (Settings > File Transfer: SYNC or HOTSPOT), not
+  // by the Flowe app. Such a session keeps its screen live until a client
+  // actually asks for status, instead of pausing when a phone merely joins.
+  bool _deviceStarted = false;
   bool _radioWasUp = false;  // any WiFi.mode() call happened -> exit tears Wi-Fi down
   wifi_event_id_t _staEventHandle = 0;  // the STA disconnect-reason hook, one per session
   bool _directMode = false;  // W2: we ARE the access point (no STA link)

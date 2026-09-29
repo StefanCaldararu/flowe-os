@@ -25,6 +25,7 @@
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 #include "../TransferMemoryProbe.h"
+#include "../notes/NotesVault.h"
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 #if defined(FLOWE_BENCH_UPLOAD_PROFILE)
@@ -38,6 +39,7 @@ extern "C" {
 }
 
 #include <cstring>
+#include <strings.h>
 #include <functional>
 #include <string>
 
@@ -188,6 +190,22 @@ void appendTombstone(const char* relName) {
 
 // Reject query paths that could escape or touch system areas. Absolute,
 // no "..", no hidden path segments (".crosspoint" etc).
+// Book sync switch ([transfer] in platformio.ini). With -DXP_TRANSFER_BOOKS=0
+// nothing under /books moves over Wi-Fi in either direction: listing,
+// manifest, download, upload, resume and delete all refuse it. Books still
+// load from the SD card by hand; notes (/notes) are unaffected.
+#ifndef XP_TRANSFER_BOOKS
+#define XP_TRANSFER_BOOKS 1
+#endif
+bool pathAllowed(const char* path) {
+#if XP_TRANSFER_BOOKS
+  (void)path;
+  return true;
+#else
+  return strncasecmp(path, "/books", 6) != 0 || (path[6] != '\0' && path[6] != '/');
+#endif
+}
+
 bool isSafePath(const char* path) {
   if (path[0] != '/') return false;
   if (strstr(path, "..") != nullptr) return false;
@@ -306,6 +324,7 @@ bool FileTransferServer::begin() {
   _server->on("/", HTTP_GET, [this] { handleRoot(); });
   _server->on("/api/status", HTTP_GET, [this] { handleStatus(); });
   _server->on("/api/files", HTTP_GET, [this] { handleFileList(); });
+  _server->on("/api/notes", HTTP_GET, [this] { handleNotesManifest(); });
   _server->on("/api/manifest", HTTP_GET, [this] { handleManifest(); });
   _server->on("/tombstones/clear", HTTP_POST, [this] {
     _requestCount++;
@@ -577,6 +596,10 @@ bool FileTransferServer::queryPath(char* dst, const size_t dstSize, const bool r
     _server->send(403, "text/plain", "Forbidden path");
     return false;
   }
+  if (!pathAllowed(dst)) {
+    _server->send(403, "text/plain", "Book sync is turned off on this device");
+    return false;
+  }
   return true;
 }
 
@@ -807,6 +830,100 @@ void FileTransferServer::handleFileList() {
   if (alive) alive = append("]", 1) && flushBatch();
   if (alive) _server->sendContent("");  // the chunked terminator, one write
   stallwatch::stage("files: done");
+}
+
+// The Obsidian vault mirror (notes/NotesVault.h) in one listing, for the
+// sync plugin: every folder, and every note with its size and FNV-1a hash,
+// so the plugin uploads only changed notes and deletes only removed ones.
+//   {"notes":[{"path":"Projects/Roadmap.md","size":812,"hash":"1a2b3c4d"}],
+//    "folders":["Projects"]}
+// Paths are below /notes. An absent vault is empty lists. Streamed in
+// chunks like handleFileList, and for the same reason it stops at the first
+// write the client refuses.
+void FileTransferServer::handleNotesManifest() {
+  _requestCount++;
+  NetworkClient client = _server->client();
+  client.setNoDelay(true);
+  _server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  _server->send(200, "application/json", "");
+
+  struct Out {
+    NetworkClient* client;
+    char batch[1024];
+    size_t used = 0;
+    bool alive = true;
+    bool firstNote = true;
+    // One chunk = ONE socket write (size line + data + CRLF), as in
+    // handleFileList: each write the socket refuses costs the framework
+    // ten 1 s retries, so three small writes per chunk tripled that risk.
+    bool flush() {
+      if (!alive || used == 0) return alive;
+      char frame[sizeof(batch) + 16];
+      const int head = snprintf(frame, sizeof(frame), "%x\r\n", static_cast<unsigned>(used));
+      memcpy(frame + head, batch, used);
+      memcpy(frame + head + used, "\r\n", 2);
+      const size_t total = static_cast<size_t>(head) + used + 2;
+      alive = client->write(reinterpret_cast<const uint8_t*>(frame), total) == total;
+      used = 0;
+      if (!alive) {
+        Serial.println("[xphone-os] transfer: notes listing: client stopped taking bytes; dropping it");
+        client->stop();
+      }
+      return alive;
+    }
+    bool append(const char* text, size_t len) {
+      if (used + len > sizeof(batch) && !flush()) return false;
+      if (len > sizeof(batch)) return false;
+      memcpy(batch + used, text, len);
+      used += len;
+      return true;
+    }
+  };
+  Out out;
+  out.client = &client;
+
+  // Two walks keep the two lists apart without holding either in RAM:
+  // notes (read and hashed), then the folder tree (no note is read).
+  stallwatch::stage("notes: listing");
+  out.append("{\"notes\":[", 10);
+  notes::walkVault(
+      [](const char* rel, bool isDir, uint32_t size, uint32_t hash, void* ctx) {
+        Out& o = *static_cast<Out*>(ctx);
+        if (isDir) return o.alive;
+        JsonDocument doc;
+        doc["path"] = rel;
+        doc["size"] = size;
+        char hex[9];
+        snprintf(hex, sizeof(hex), "%08x", static_cast<unsigned>(hash));
+        doc["hash"] = hex;
+        char entry[notes::kMaxPath + 64];
+        const size_t n = serializeJson(doc, entry, sizeof(entry));
+        if (n >= sizeof(entry)) return o.alive;  // cannot happen: paths are capped
+        if (!o.firstNote) o.append(",", 1);
+        o.firstNote = false;
+        esp_task_wdt_reset();  // each note was just read whole for its hash
+        yield();
+        return o.append(entry, n);
+      },
+      &out);
+  out.append("],\"folders\":[", 13);
+  out.firstNote = true;
+  notes::walkVault(
+      [](const char* rel, bool isDir, uint32_t, uint32_t, void* ctx) {
+        Out& o = *static_cast<Out*>(ctx);
+        if (!isDir) return o.alive;
+        JsonDocument doc;
+        doc.set(rel);
+        char entry[notes::kMaxPath + 8];
+        const size_t n = serializeJson(doc, entry, sizeof(entry));
+        if (n >= sizeof(entry)) return o.alive;
+        if (!o.firstNote) o.append(",", 1);
+        o.firstNote = false;
+        return o.append(entry, n);
+      },
+      &out, /*readNotes=*/false);
+  if (out.append("]}", 2) && out.flush()) _server->sendContent("");  // chunked terminator
+  stallwatch::stage("notes: done");
 }
 
 void FileTransferServer::handleDownload() {
@@ -1358,6 +1475,7 @@ int FileTransferServer::startResumeFromRequest(bool initialBody) {
   char target[192];
   const int length = snprintf(target, sizeof(target), "%s/%s", directory.c_str(), name.c_str());
   if (length < 0 || size_t(length) >= sizeof(target)) { return int(Result::invalid); }
+  if (!pathAllowed(target)) return int(Result::invalid);  // book sync off
   if (initialBody && size != _server->clientContentLength()) return int(Result::invalid);
   return int(gResumeUpload.start(reader.c_str(), target, size, digest.c_str(), id.c_str(), secret.c_str(), initialBody));
 }
@@ -1642,6 +1760,11 @@ void FileTransferServer::handleUploadData() {
       snprintf(dir, sizeof(dir), "%s%s", arg.startsWith("/") ? "" : "/", arg.c_str());
       size_t len = strlen(dir);
       while (len > 1 && dir[len - 1] == '/') dir[--len] = '\0';
+    }
+    if (!pathAllowed(dir)) {
+      Serial.printf("[xphone-os] transfer: %s refused (book sync is off)\n", dir);
+      _upload.failed = true;
+      return;
     }
     if (!isSafePath(dir) || up.filename.length() == 0 || isHiddenName(up.filename.c_str()) ||
         up.filename.indexOf('/') >= 0 || up.filename.indexOf('\\') >= 0 ||
@@ -1928,6 +2051,10 @@ static void appendEscaped(String& out, const char* s) {
 
 void FileTransferServer::handleManifest() {
   _requestCount++;
+  if (!pathAllowed("/books")) {
+    _server->send(403, "text/plain", "Book sync is turned off on this device");
+    return;
+  }
   _server->setContentLength(CONTENT_LENGTH_UNKNOWN);
   _server->send(200, "application/json", "");
   // The synchronous server cannot upload while it builds a manifest. Reuse

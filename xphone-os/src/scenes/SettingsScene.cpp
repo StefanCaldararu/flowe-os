@@ -39,23 +39,29 @@ constexpr int kRowPad = 16;    // row height = lineHeight(bold) + kRowPad
 
 
 // 0.7 ships the tile grid (Andrew, 2026-09-06 14:27): kExploreHomeApps in
-// HomeScene.h hides the Home layout row and the Sleep screen row here.
-constexpr const char* kMenuLabelsShip[6] = {"Wi-Fi", "Sleep", "SD Firmware Update", "Icon style", "Restart", "About"};
-constexpr const char* kMenuLabelsExplore[7] = {"Wi-Fi", "Sleep", "Home layout", "SD Firmware Update",
-                                               "Icon style", "Restart", "About"};
-constexpr int kMenuCount = kExploreHomeApps ? 7 : 6;
+// HomeScene.h hides the Home layout row here. The Sleep screen row always
+// shows (Priorities or Image; Last screen only when exploring).
+// File Transfer: start a Wi-Fi session from the device itself (saved
+// network or the device's own hotspot) for the Obsidian sync plugin or a
+// browser, without the Flowe app.
+constexpr const char* kMenuLabelsShip[7] = {"Wi-Fi", "File Transfer", "Sleep", "SD Firmware Update",
+                                            "Icon style", "Restart", "About"};
+constexpr const char* kMenuLabelsExplore[8] = {"Wi-Fi", "File Transfer", "Sleep", "Home layout",
+                                               "SD Firmware Update", "Icon style", "Restart", "About"};
+constexpr int kMenuCount = kExploreHomeApps ? 8 : 7;
 inline const char* menuLabel(const int i) { return kExploreHomeApps ? kMenuLabelsExplore[i] : kMenuLabelsShip[i]; }
 // What a menu index means: the Home layout row only exists when exploring.
-enum class MenuAction : uint8_t { Wifi, Sleep, HomeLayout, Picker, IconStyle, Restart, About };
+enum class MenuAction : uint8_t { Wifi, Transfer, Sleep, HomeLayout, Picker, IconStyle, Restart, About };
 inline MenuAction menuAction(const int i) {
-  static constexpr MenuAction kShip[6] = {MenuAction::Wifi, MenuAction::Sleep, MenuAction::Picker,
-                                          MenuAction::IconStyle, MenuAction::Restart, MenuAction::About};
-  static constexpr MenuAction kExplore[7] = {MenuAction::Wifi,      MenuAction::Sleep,   MenuAction::HomeLayout,
-                                             MenuAction::Picker,    MenuAction::IconStyle, MenuAction::Restart,
-                                             MenuAction::About};
+  static constexpr MenuAction kShip[7] = {MenuAction::Wifi,      MenuAction::Transfer, MenuAction::Sleep,
+                                          MenuAction::Picker,    MenuAction::IconStyle, MenuAction::Restart,
+                                          MenuAction::About};
+  static constexpr MenuAction kExplore[8] = {MenuAction::Wifi,      MenuAction::Transfer,  MenuAction::Sleep,
+                                             MenuAction::HomeLayout, MenuAction::Picker,   MenuAction::IconStyle,
+                                             MenuAction::Restart,   MenuAction::About};
   return kExploreHomeApps ? kExplore[i] : kShip[i];
 }
-constexpr int kSleepRows = kExploreHomeApps ? 3 : 2;
+constexpr int kSleepRows = 3;
 
 // Fixed-buffer UTF-8-safe truncation with "..." (same helper pattern as
 // NotificationsScene.cpp truncateToWidth).
@@ -226,6 +232,9 @@ void SettingsScene::handleInput(Input& in) {
           case MenuAction::Wifi:
             showWifi();  // the device's Wi-Fi screen (E1); a sync itself starts from the phone
             return;
+          case MenuAction::Transfer:
+            showFileTransfer();  // Idle: SYNC joins saved Wi-Fi, HOTSPOT raises the device's own
+            return;
           case MenuAction::Sleep:
             _view = View::Sleep;
             _sleepSel = 0;
@@ -265,7 +274,7 @@ void SettingsScene::handleInput(Input& in) {
       if (in.wasPressed(Btn::Confirm)) {
         if (_sleepSel < 2) enterSleepPick();
         else {
-          Sleep::cycleFace(+1);  // exploration-only row: two faces, OPEN flips
+          Sleep::cycleFace(+1);  // OPEN steps to the next face
           markDirty();
         }
       }
@@ -402,7 +411,7 @@ void SettingsScene::renderMenu(Gfx& gfx) {
   gfx.drawTextCentered(kFontRegular, gfx.width() / 2, footY, footer);
 }
 
-// Settings > Sleep: two rows, each a choice list. NEXT (or Left/Right) cycles
+// Settings > Sleep: nap/off rows (each a choice list) and the sleep screen row. NEXT (or Left/Right) cycles
 // the selected row; Up/Down picks the row. Saved at once.
 void SettingsScene::renderSleep(Gfx& gfx) {
   drawHeader(gfx, "Sleep", nullptr);
@@ -415,10 +424,8 @@ void SettingsScene::renderSleep(Gfx& gfx) {
   Sleep::formatMinutes(v, sizeof(v), Sleep::offAfterMin());
   drawRow(gfx, y, rowH, "Off after", v, _sleepSel == 1);
   y += rowH;
-  if (kExploreHomeApps) {
-    drawRow(gfx, y, rowH, "Sleep screen", Sleep::faceName(Sleep::face()), _sleepSel == 2);
-    y += rowH;
-  }
+  drawRow(gfx, y, rowH, "Sleep screen", Sleep::faceName(Sleep::face()), _sleepSel == 2);
+  y += rowH;
   y += 16;
 
   // What the two states mean, in the words the posters use.
@@ -434,6 +441,8 @@ void SettingsScene::renderSleep(Gfx& gfx) {
     gfx.drawText(kFontRegular, kMarginX, y + 4 * lh + 16, "While a block runs, the nap");
     gfx.drawText(kFontRegular, kMarginX, y + 5 * lh + 16, "comes after 2 minutes.");
   }
+  gfx.drawText(kFontRegular, kMarginX, y + 6 * lh + 24, "Image: sleep.bin on the SD");
+  gfx.drawText(kFontRegular, kMarginX, y + 7 * lh + 24, "card, else the built-in one.");
 }
 
 void SettingsScene::enterSleepPick() {

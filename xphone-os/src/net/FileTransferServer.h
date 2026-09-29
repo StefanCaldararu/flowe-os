@@ -104,6 +104,7 @@ class FileTransferServer {
   void handleStatus();
   void handleManifest();
   void handleFileList();
+  void handleNotesManifest();  // GET /api/notes: the /notes vault for Obsidian sync
   void handleDownload();
   void handleDelete();
   /// Remove the other half of a book (its source, or its package) plus their

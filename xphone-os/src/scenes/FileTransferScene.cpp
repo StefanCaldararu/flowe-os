@@ -190,6 +190,7 @@ void FileTransferScene::onEnter() {
   sSyncDisplay = false;
   sCancelSync = false;
   _state = State::Idle;
+  _deviceStarted = false;
   _parkedSinceMs = millis();
   _radioWasUp = false;
   _staEventHandle = 0;
@@ -311,8 +312,11 @@ void FileTransferScene::onExit() {
 }
 
 const char* const* FileTransferScene::softKeys() const {
-  static constexpr const char* kIdleKeys[4] = {"BACK", "SYNC", nullptr, nullptr};
-  static constexpr const char* kIdleNoCredsKeys[4] = {"BACK", nullptr, nullptr, nullptr};
+  // Started from the device (Settings > File Transfer): SYNC joins the saved
+  // network, HOTSPOT raises the device's own (192.168.44.1) for a phone with
+  // no shared Wi-Fi — the Obsidian plugin's default address.
+  static constexpr const char* kIdleKeys[4] = {"BACK", "SYNC", "HOTSPOT", nullptr};
+  static constexpr const char* kIdleNoCredsKeys[4] = {"BACK", "HOTSPOT", nullptr, nullptr};
   static constexpr const char* kConnectingKeys[4] = {"CANCEL", nullptr, nullptr, nullptr};
   static constexpr const char* kRunningKeys[4] = {"EXIT", nullptr, nullptr, nullptr};
   static constexpr const char* kHotspotKeys[4] = {"EXIT", "PASSWORD", nullptr, nullptr};
@@ -1023,7 +1027,14 @@ void FileTransferScene::handleInput(Input& in) {
         exitScene();
         return;
       }
-      if (in.wasPressed(Btn::Confirm) && _ssid[0]) startSta();
+      if (in.wasPressed(Btn::Confirm) && _ssid[0]) {
+        _deviceStarted = true;
+        startSta();
+      } else if ((in.wasPressed(Btn::Confirm) && !_ssid[0]) || (in.wasPressed(Btn::Left) && _ssid[0])) {
+        _deviceStarted = true;
+        startAp();
+        return;
+      }
       // Unattended parking guard: this screen with no session running
       // gives up after 2 minutes and goes home. BLE is up; nothing ends.
       if (_parkedSinceMs && millis() - _parkedSinceMs > kParkedTimeoutMs) {
@@ -1049,7 +1060,11 @@ void FileTransferScene::handleInput(Input& in) {
         return;
       }
       for (int i = 0; i < kPumpPerTick; i++) {
-        if (_directMode && !_staticSync) activateSyncMemory(/*associatedHotspot=*/true);
+        // The Flowe app syncs the moment it joins, so its hotspot sessions
+        // prepare memory on association. A session started on the device
+        // waits for /api/status (the Obsidian plugin's first request), so a
+        // phone that only joins does not freeze the screen.
+        if (_directMode && !_staticSync && !_deviceStarted) activateSyncMemory(/*associatedHotspot=*/true);
         if (transfer_sync::cancelRequested()) break;
         _server.handleClient();
         if (transfer_sync::cancelRequested()) break;
@@ -1245,24 +1260,28 @@ void FileTransferScene::render(Gfx& gfx) {
 
   switch (_state) {
     case State::Idle:
-      gfx.drawText(kFontRegular, kMarginX, y, "Move books with the Flowe app");
+      // Lines stay under ~36 characters: the monospaced UI font fits
+      // about 37 across the X3's 528 px.
+      gfx.drawText(kFontRegular, kMarginX, y, "Sync books (Flowe app) and");
       y += lineReg + 4;
-      gfx.drawText(kFontRegular, kMarginX, y, "over Wi-Fi.");
+      gfx.drawText(kFontRegular, kMarginX, y, "notes (Obsidian) over Wi-Fi.");
       y += lineReg + 24;
       if (_ssid[0]) {
         gfx.drawText(kFontBold, kMarginX, y, "Saved network");
         y += lineBold + 4;
         gfx.drawText(kFontRegular, kMarginX, y, _ssid);
         y += lineReg + 20;
-        gfx.drawText(kFontRegular, kMarginX, y, "Press SYNC to join it, or start");
+        gfx.drawText(kFontRegular, kMarginX, y, "SYNC joins it. HOTSPOT makes");
         y += lineReg + 4;
-        gfx.drawText(kFontRegular, kMarginX, y, "a sync from the Flowe app.");
+        gfx.drawText(kFontRegular, kMarginX, y, "a network your phone can join.");
       } else {
         gfx.drawText(kFontBold, kMarginX, y, "No Wi-Fi saved yet");
         y += lineBold + 4;
-        gfx.drawText(kFontRegular, kMarginX, y, "Add your network in the Flowe");
+        gfx.drawText(kFontRegular, kMarginX, y, "HOTSPOT makes a network your");
         y += lineReg + 4;
-        gfx.drawText(kFontRegular, kMarginX, y, "app (Read tab > Sync).");
+        gfx.drawText(kFontRegular, kMarginX, y, "phone can join. (To save your");
+        y += lineReg + 4;
+        gfx.drawText(kFontRegular, kMarginX, y, "Wi-Fi, use the Flowe app.)");
       }
       break;
 
@@ -1288,7 +1307,7 @@ void FileTransferScene::render(Gfx& gfx) {
       gfx.drawTextCentered(kFontBold, w / 2, y, url);
       y += lineBold + 6;
       gfx.drawTextCentered(kFontRegular, w / 2, y,
-                           gWifiTestMode ? "Joined. Waiting for your phone to knock." : "Open Flowe > Read > Sync");
+                           gWifiTestMode ? "Joined. Waiting for your phone to knock." : "Sync from Obsidian or Flowe");
       y += lineReg + 24;
 
       char stats[64];
@@ -1329,9 +1348,11 @@ void FileTransferScene::drawHotspotScreen(Gfx& gfx, int y) {
     y += lineReg + 2;
     gfx.drawTextScaled(kFontBold, kMarginX, y, apPass, 2);
     y += lineBold * 2 + 16;
-    gfx.drawText(kFontRegular, kMarginX, y, "Join it in your phone's Wi-Fi settings,");
+    gfx.drawText(kFontRegular, kMarginX, y, "Join it in your phone's Wi-Fi");
     y += lineReg + 4;
-    gfx.drawText(kFontRegular, kMarginX, y, "then open the Flowe app.");
+    gfx.drawText(kFontRegular, kMarginX, y, "settings, then sync from");
+    y += lineReg + 4;
+    gfx.drawText(kFontRegular, kMarginX, y, "Obsidian or the Flowe app.");
   } else {
     char text[96];
     snprintf(text, sizeof(text), "WIFI:T:WPA;S:%s;P:%s;;", apSsid, apPass);
@@ -1360,7 +1381,9 @@ void FileTransferScene::drawHotspotScreen(Gfx& gfx, int y) {
     y += lineBold + 10;
     gfx.drawTextCentered(kFontRegular, w / 2, y, "Point your phone's camera here");
     y += lineReg + 4;
-    gfx.drawTextCentered(kFontRegular, w / 2, y, "and tap Join. Then open the Flowe app.");
+    gfx.drawTextCentered(kFontRegular, w / 2, y, "and tap Join. Then sync from");
+    y += lineReg + 4;
+    gfx.drawTextCentered(kFontRegular, w / 2, y, "Obsidian or the Flowe app.");
   }
   y += lineReg + 18;
   char stats[64];
