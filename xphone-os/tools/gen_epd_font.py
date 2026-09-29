@@ -141,10 +141,10 @@ def main():
     lines = []
     lines.append("/**")
     lines.append(" * Subset (%s) of %s — generated, do not hand-edit." % (range_desc, name))
-    lines.append(" * Rendered directly from the Ubuntu TTF by tools/gen_epd_font.py; the")
+    lines.append(" * Rendered directly from the TTF by tools/gen_epd_font.py; the")
     lines.append(" * recipe reproduces the retired x4-os fontconvert output byte-exactly.")
     lines.append(" * Regenerate from the xphone-os directory with:")
-    lines.append(" *   python3 tools/gen_epd_font.py <Ubuntu ttf> %d %s src/fonts/%s" % (pt, name, out_path.split("/")[-1]))
+    lines.append(" *   python3 tools/gen_epd_font.py <ttf> %d %s src/fonts/%s" % (pt, name, out_path.split("/")[-1]))
     lines.append(" */")
     lines.append("#pragma once")
     lines.append('#include "EpdFontData.h"')
